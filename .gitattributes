@@ -1,4 +1,4 @@
-# シェルスクリプトは必ず LF。CRLF だと Linux / macOS の bash が壊れる。
+# Shell scripts must stay LF; CRLF breaks bash on Linux and macOS.
 *.sh   text eol=lf
 *.ps1  text eol=crlf
 *.json text eol=lf

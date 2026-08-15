@@ -1,18 +1,20 @@
 <#
 .SYNOPSIS
-  コンテキスト肥大とプロンプトキャッシュ失効による無駄なトークン消費を防ぐフック（Windows / PowerShell 版）。
+  Hook that prevents wasted tokens from context bloat and prompt-cache expiry (Windows / PowerShell).
 
 .DESCRIPTION
   -Mode Submit (UserPromptSubmit):
-    送信前に走る。文脈が大きい / キャッシュが失効していると exit 2 で送信をブロックし、
-    /compact・/clear・そのまま続行 の3択を提示する。ブロック時はAPI呼び出しが発生しない。
-    同じ内容をもう一度送ればスヌーズ期間中はスルーされる（＝「そのまま続ける」）。
+    Runs before the prompt is sent. If the context is large or the cache has expired,
+    exits 2 to block the send and offers three choices: /compact, /clear, or continue.
+    Blocking costs nothing because no API call happens.
+    Re-sending the same text within the snooze window passes through (= "continue").
 
   -Mode Stop (Stop):
-    ターン終了時に走る。ブロックはせず、文脈が一定量を超えたときだけ1行通知する。
+    Runs at the end of a turn. Never blocks; prints a single line when the context
+    exceeds a threshold.
 
-  入力は stdin の JSON（transcript_path, session_id, prompt など）。
-  しきい値は環境変数で上書きできる（README 参照）。
+  Input is JSON on stdin (transcript_path, session_id, prompt, ...).
+  Thresholds can be overridden with environment variables (see README).
 #>
 [CmdletBinding()]
 param(
@@ -20,7 +22,7 @@ param(
     [string]$Mode = 'Submit'
 )
 
-# 非Windowsでは何もしない（同梱の .sh 版が担当する）
+# Do nothing on non-Windows; the bundled .sh handles those platforms.
 if ($null -ne $IsWindows -and -not $IsWindows) { exit 0 }
 
 function Get-Threshold {
@@ -32,15 +34,15 @@ function Get-Threshold {
     return $Default
 }
 
-# --- しきい値（環境変数で上書き可） -----------------------------------------
-$BlockCtx      = Get-Threshold 'CONTEXT_GUARD_BLOCK_TOKENS'   150000  # これを超えたら無条件でブロック
-$StaleCtx      = Get-Threshold 'CONTEXT_GUARD_STALE_TOKENS'    80000  # 「キャッシュ失効かつ中規模」の下限
-$StaleMinutes  = Get-Threshold 'CONTEXT_GUARD_STALE_MINUTES'      55  # プロンプトキャッシュのTTLは1時間
-$SnoozeMinutes = Get-Threshold 'CONTEXT_GUARD_SNOOZE_MINUTES'     30  # 一度警告したら次はこの時間スルー
-$NotifyCtx     = Get-Threshold 'CONTEXT_GUARD_NOTIFY_TOKENS'  200000  # Stop通知の下限
-$NotifyBucket  = Get-Threshold 'CONTEXT_GUARD_NOTIFY_BUCKET'   50000  # Stop通知はこの刻みで1回だけ
+# --- Thresholds (overridable via environment variables) ----------------------
+$BlockCtx      = Get-Threshold 'CONTEXT_GUARD_BLOCK_TOKENS'   250000  # block unconditionally above this
+$StaleCtx      = Get-Threshold 'CONTEXT_GUARD_STALE_TOKENS'    80000  # floor for "cache expired and non-trivial"
+$StaleMinutes  = Get-Threshold 'CONTEXT_GUARD_STALE_MINUTES'      55  # the prompt cache TTL is one hour
+$SnoozeMinutes = Get-Threshold 'CONTEXT_GUARD_SNOOZE_MINUTES'     30  # stay quiet this long after a warning
+$NotifyCtx     = Get-Threshold 'CONTEXT_GUARD_NOTIFY_TOKENS'  200000  # floor for the Stop notice
+$NotifyBucket  = Get-Threshold 'CONTEXT_GUARD_NOTIFY_BUCKET'   50000  # notify once per bucket of this size
 
-# 動作確認用: CONTEXT_GUARD_TEST=1 でしきい値を極端に下げ、必ず発火させる
+# For verification: CONTEXT_GUARD_TEST=1 drops every threshold so the hook always fires.
 if ($env:CONTEXT_GUARD_TEST -eq '1') {
     $BlockCtx = 1; $StaleCtx = 1; $StaleMinutes = 0; $SnoozeMinutes = 1
     $NotifyCtx = 1; $NotifyBucket = 1
@@ -49,13 +51,13 @@ if ($env:CONTEXT_GUARD_TEST -eq '1') {
 $StateDir  = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
 $StatePath = Join-Path $StateDir 'context-guard-state.json'
 
-# 日本語がターミナルで化けないように
+# Keep non-ASCII output (the warning glyph) readable in the terminal.
 try {
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     [Console]::InputEncoding  = [Text.UTF8Encoding]::new($false)
 } catch { }
 
-# 何があってもセッションを壊さない。異常時は素通り（exit 0）。
+# Never break the session. On anything unexpected, fall through with exit 0.
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
@@ -67,15 +69,16 @@ try {
     $sessionId = if ($payload.session_id) { $payload.session_id } else { 'unknown' }
     $prompt    = if ($payload.prompt) { [string]$payload.prompt } else { '' }
 
-    # スラッシュコマンド自体（/compact, /clear など）は止めない
+    # Never block slash commands themselves (/compact, /clear, ...).
     if ($Mode -eq 'Submit' -and $prompt.TrimStart().StartsWith('/')) { exit 0 }
 
-    # --- transcript から最新の文脈サイズと最終活動時刻を拾う ---------------
-    # 末尾だけ読む。1行が巨大なことがあるので usage を含む行だけ JSON にする。
+    # --- Read the current context size and last activity from the transcript --
+    # Only the tail is read. Lines can be huge, so parse only those carrying usage.
     $tail = Get-Content -LiteralPath $transcript -Tail 60 -Encoding UTF8 -ErrorAction Stop
 
-    # ISO文字列はConvertFrom-Jsonに Kind=Unspecified のDateTimeへ変換され、Zが落ちる。
-    # それをToUniversalTime()に渡すと更にUTC変換されて時差ぶんずれるので、生の文字列から読む。
+    # ConvertFrom-Json turns an ISO string into a DateTime with Kind=Unspecified,
+    # dropping the trailing Z. Passing that to ToUniversalTime() shifts it again by
+    # the local offset, so timestamps are parsed from the raw string instead.
     $nowSec = [int64]([datetimeoffset](Get-Date)).ToUnixTimeSeconds()
 
     $ctx     = 0
@@ -100,8 +103,8 @@ try {
 
     $gapMin = if ($null -ne $lastSec) { [int](($nowSec - $lastSec) / 60) } else { 0 }
 
-    # --- 状態ファイル -------------------------------------------------------
-    # 状態も epoch 秒で持つ（ISO文字列はJSON往復でDateTime化されて壊れる）
+    # --- State file ----------------------------------------------------------
+    # State is stored as epoch seconds; ISO strings get mangled on a JSON round trip.
     $state = @{}
     if (Test-Path -LiteralPath $StatePath) {
         try {
@@ -114,7 +117,7 @@ try {
 
     function Save-State {
         param($Table, $Now)
-        # 古いセッションが溜まらないよう7日で掃除
+        # Drop entries older than 7 days so old sessions do not accumulate.
         $cutoff = $Now - (7 * 24 * 60 * 60)
         $keep = @{}
         foreach ($k in $Table.Keys) {
@@ -130,24 +133,24 @@ try {
     $ctxK = '{0:N0}' -f $ctx
 
     if ($Mode -eq 'Stop') {
-        # ---- ターン終了時: ブロックせず1行だけ ----------------------------
+        # ---- End of turn: notify only, never block --------------------------
         if ($ctx -lt $NotifyCtx) { exit 0 }
         $bucket = [math]::Floor($ctx / $NotifyBucket)
         if ($mine -and [int]$mine.bucket -ge $bucket) { exit 0 }
         $state[$entryKey] = @{ at = $nowSec; bucket = $bucket }
         Save-State $state $nowSec
 
-        $msg = "コンテキストが $ctxK トークンです。次の話題に移るなら /clear、続きなら /compact を検討してください（1ターンあたりこの全量が再課金されます）"
+        $msg = "Context is $ctxK tokens. Consider /clear if you are switching topics, or /compact to carry the work forward - this full amount is re-billed every turn."
         Write-Output (@{ systemMessage = $msg } | ConvertTo-Json -Compress)
         exit 0
     }
 
-    # ---- 送信前: 条件を満たさなければ素通り --------------------------------
+    # ---- Before sending: pass through unless a condition matches ------------
     $stale  = ($gapMin -ge $StaleMinutes -and $ctx -ge $StaleCtx)
     $tooBig = ($ctx -ge $BlockCtx)
     if (-not ($stale -or $tooBig)) { exit 0 }
 
-    # 直近で警告済みなら「そのまま続ける」の意思表示とみなして通す
+    # Already warned recently: treat the re-send as "continue anyway" and let it through.
     if ($mine -and $null -ne $mine.at) {
         $sinceMin = ($nowSec - [int64]$mine.at) / 60.0
         if ($sinceMin -lt $SnoozeMinutes) { exit 0 }
@@ -156,28 +159,28 @@ try {
     $state[$entryKey] = @{ at = $nowSec; bucket = 0 }
     Save-State $state $nowSec
 
-    # ---- 警告してブロック（API呼び出しは発生しない） -----------------------
+    # ---- Warn and block (no API call is made) -------------------------------
     $head = if ($stale) {
-        "コンテキスト $ctxK トークン / 前回のやり取りから ${gapMin}分経過`n" +
-        "  プロンプトキャッシュ(TTL 1時間)が失効しているため、このまま送ると約 $ctxK トークンの書き直しが発生します。"
+        "Context $ctxK tokens / $gapMin min since last activity`n" +
+        "  The prompt cache (1h TTL) has expired, so sending this will rewrite about $ctxK tokens."
     } else {
-        "コンテキスト $ctxK トークン`n" +
-        "  このまま続けると、小さな修正でも毎ターン $ctxK トークンぶんが再課金されます。"
+        "Context $ctxK tokens`n" +
+        "  Keep going and every turn is re-billed for all $ctxK tokens, even a one-word tweak."
     }
 
     $lines = @(
         ''
         "⚠ $head"
         ''
-        '  [1] /compact          作業の続きなら（経緯を引き継ぐ。2〜3ターンで元が取れる）'
-        '  [2] /clear            話題が変わるなら（コスト0）'
-        "  [3] そのまま続ける     同じ内容をもう一度送信（以後${SnoozeMinutes}分は警告しません）"
+        '  [1] /compact      Continuing this work (keeps the thread; pays off in 2-3 turns)'
+        '  [2] /clear        Switching topics (free)'
+        "  [3] Continue      Send the same text again (no warning for the next $SnoozeMinutes min)"
         ''
     )
     [Console]::Error.WriteLine(($lines -join "`n"))
     exit 2
 }
 catch {
-    # フック自身の失敗でユーザーを止めない
+    # A failure in the hook itself must never stop the user.
     exit 0
 }
