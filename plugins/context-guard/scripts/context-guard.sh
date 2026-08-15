@@ -153,10 +153,6 @@ fi
   printf '\n⚠ %s\n\n' "$HEAD"
   printf '  [1] /compact          作業の続きなら（経緯を引き継ぐ。2〜3ターンで元が取れる）\n'
   printf '  [2] /clear            話題が変わるなら（コスト0）\n'
-  printf '  [3] そのまま続ける     同じ内容をもう一度送信（以後%s分は警告しません）\n' "$SNOOZE_MIN"
-  printf '\n  ↑キーで入力内容を復元できます。復元できないとき用に以下に控えます:\n'
-  printf '  ---\n'
-  printf '%s\n' "$PROMPT" | sed 's/^/  /'
-  printf '  ---\n\n'
+  printf '  [3] そのまま続ける     同じ内容をもう一度送信（以後%s分は警告しません）\n\n' "$SNOOZE_MIN"
 } >&2
 exit 2

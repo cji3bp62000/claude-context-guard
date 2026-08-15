@@ -173,11 +173,6 @@ try {
         '  [2] /clear            話題が変わるなら（コスト0）'
         "  [3] そのまま続ける     同じ内容をもう一度送信（以後${SnoozeMinutes}分は警告しません）"
         ''
-        '  ↑キーで入力内容を復元できます。復元できないとき用に以下に控えます:'
-        '  ---'
-        ($prompt -split "`n" | ForEach-Object { "  $_" })
-        '  ---'
-        ''
     )
     [Console]::Error.WriteLine(($lines -join "`n"))
     exit 2
