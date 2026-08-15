@@ -1,0 +1,14 @@
+{
+  "name": "claude-context-guard",
+  "owner": {
+    "name": "tsukimi_neko",
+    "url": "https://github.com/cji3bp62000"
+  },
+  "plugins": [
+    {
+      "name": "context-guard",
+      "source": "./plugins/context-guard",
+      "description": "コンテキスト肥大とプロンプトキャッシュ失効による無駄なトークン消費を、送信前に止めるフック。"
+    }
+  ]
+}

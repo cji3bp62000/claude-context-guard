@@ -1,0 +1,11 @@
+{
+  "name": "context-guard",
+  "description": "コンテキストが肥大した状態やプロンプトキャッシュが失効した状態での送信を、API呼び出しの前に止めて /compact・/clear を促すフック。",
+  "version": "0.1.0",
+  "author": {
+    "name": "tsukimi_neko",
+    "url": "https://github.com/cji3bp62000"
+  },
+  "homepage": "https://github.com/cji3bp62000/claude-context-guard",
+  "keywords": ["hooks", "context", "tokens", "cost", "compact"]
+}
