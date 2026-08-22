@@ -8,7 +8,7 @@
     {
       "name": "context-guard",
       "source": "./plugins/context-guard",
-      "description": "Blocks a prompt before it is sent when the context has grown large or the prompt cache has expired, so you stop paying to re-read a bloated session."
+      "description": "Blocks a prompt before it is sent when the prompt cache has expired, so you stop paying to re-read a bloated session."
     }
   ]
 }

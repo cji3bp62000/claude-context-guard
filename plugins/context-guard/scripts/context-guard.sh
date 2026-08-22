@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Hook that prevents wasted tokens from context bloat and prompt-cache expiry (macOS / Linux).
+# Hook that prevents wasted tokens from prompt-cache expiry (macOS / Linux).
 #
-#   --mode submit (UserPromptSubmit): runs before sending; exits 2 to block and offers three choices.
-#   --mode stop   (Stop):             runs at end of turn; never blocks, prints one line.
+# Runs on UserPromptSubmit, before the prompt is sent; exits 2 to block and offers three choices.
 #
 # Input is JSON on stdin (transcript_path, session_id, prompt, ...).
 # Thresholds can be overridden with environment variables (see README).
@@ -11,30 +10,19 @@
 
 set -u
 
-MODE="submit"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --mode) MODE="${2:-submit}"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-
 # On Git Bash / MSYS / Cygwin (i.e. Windows), leave it to the PowerShell version.
 case "$(uname -s 2>/dev/null || echo unknown)" in
   MINGW*|MSYS*|CYGWIN*) exit 0 ;;
 esac
 
 # --- Thresholds (overridable via environment variables) ----------------------
-BLOCK_CTX="${CONTEXT_GUARD_BLOCK_TOKENS:-250000}"
 STALE_CTX="${CONTEXT_GUARD_STALE_TOKENS:-80000}"
 STALE_MIN="${CONTEXT_GUARD_STALE_MINUTES:-55}"
 SNOOZE_MIN="${CONTEXT_GUARD_SNOOZE_MINUTES:-30}"
-NOTIFY_CTX="${CONTEXT_GUARD_NOTIFY_TOKENS:-200000}"
-NOTIFY_BUCKET="${CONTEXT_GUARD_NOTIFY_BUCKET:-50000}"
 
 # For verification: always fire.
 if [ "${CONTEXT_GUARD_TEST:-}" = "1" ]; then
-  BLOCK_CTX=1; STALE_CTX=1; STALE_MIN=0; SNOOZE_MIN=1; NOTIFY_CTX=1; NOTIFY_BUCKET=1
+  STALE_CTX=1; STALE_MIN=0; SNOOZE_MIN=1
 fi
 
 STATE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -60,8 +48,8 @@ SESSION="$(json_str session_id)"; [ -n "$SESSION" ] || SESSION="unknown"
 PROMPT="$(json_str prompt)"
 
 # Never block slash commands themselves (/compact, /clear, ...).
-case "$MODE:$PROMPT" in
-  submit:/*) exit 0 ;;
+case "$PROMPT" in
+  /*) exit 0 ;;
 esac
 
 # --- Read the current context size and last activity from the transcript -----
@@ -91,66 +79,40 @@ fi
 GAP_MIN=0
 [ -n "$LAST_SEC" ] && GAP_MIN=$(( (NOW_SEC - LAST_SEC) / 60 ))
 
-# --- State file (key <TAB> epoch <TAB> bucket) -------------------------------
-KEY="$MODE:$SESSION"
-PREV_AT=""; PREV_BUCKET=-1
+# --- Pass through unless the cache has expired on a non-trivial context ------
+[ "$GAP_MIN" -ge "$STALE_MIN" ] && [ "$CTX" -ge "$STALE_CTX" ] || exit 0
+
+# --- State file (key <TAB> epoch) --------------------------------------------
+KEY="submit:$SESSION"
+PREV_AT=""
 if [ -f "$STATE_PATH" ]; then
   PREV_LINE="$(grep -F "$KEY	" "$STATE_PATH" 2>/dev/null | tail -n 1 || true)"
-  if [ -n "$PREV_LINE" ]; then
-    PREV_AT="$(printf '%s' "$PREV_LINE" | cut -f2)"
-    PREV_BUCKET="$(printf '%s' "$PREV_LINE" | cut -f3)"
-  fi
+  [ -n "$PREV_LINE" ] && PREV_AT="$(printf '%s' "$PREV_LINE" | cut -f2)"
 fi
-
-save_state() { # $1=bucket; drop rows older than 7 days and write back
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  CUTOFF=$(( NOW_SEC - 7*24*60*60 ))
-  TMP="$STATE_PATH.tmp.$$"
-  if [ -f "$STATE_PATH" ]; then
-    awk -F'\t' -v c="$CUTOFF" -v k="$KEY" '$1 != k && $2 > c' "$STATE_PATH" > "$TMP" 2>/dev/null || : > "$TMP"
-  else
-    : > "$TMP"
-  fi
-  printf '%s\t%s\t%s\n' "$KEY" "$NOW_SEC" "$1" >> "$TMP"
-  mv "$TMP" "$STATE_PATH" 2>/dev/null || rm -f "$TMP"
-}
-
-CTX_FMT="$(printf '%s' "$CTX" | sed -e :a -e 's/\(.*[0-9]\)\([0-9]\{3\}\)/\1,\2/;ta')"
-
-if [ "$MODE" = "stop" ]; then
-  [ "$CTX" -ge "$NOTIFY_CTX" ] || exit 0
-  BUCKET=$(( CTX / NOTIFY_BUCKET ))
-  [ "$PREV_BUCKET" = "" ] && PREV_BUCKET=-1
-  [ "$BUCKET" -gt "$PREV_BUCKET" ] || exit 0
-  save_state "$BUCKET"
-  printf '{"systemMessage":"Context is %s tokens. Consider /clear if you are switching topics, or /compact to carry the work forward - this full amount is re-billed every turn."}\n' "$CTX_FMT"
-  exit 0
-fi
-
-# --- Before sending ----------------------------------------------------------
-STALE=0
-[ "$GAP_MIN" -ge "$STALE_MIN" ] && [ "$CTX" -ge "$STALE_CTX" ] && STALE=1
-TOO_BIG=0
-[ "$CTX" -ge "$BLOCK_CTX" ] && TOO_BIG=1
-[ "$STALE" = "1" ] || [ "$TOO_BIG" = "1" ] || exit 0
 
 # Already warned recently: treat the re-send as "continue anyway" and let it through.
 if [ -n "$PREV_AT" ]; then
   SINCE=$(( (NOW_SEC - PREV_AT) / 60 ))
   [ "$SINCE" -lt "$SNOOZE_MIN" ] && exit 0
 fi
-save_state 0
 
-if [ "$STALE" = "1" ]; then
-  HEAD="Context $CTX_FMT tokens / $GAP_MIN min since last activity
-  The prompt cache (1h TTL) has expired, so sending this will rewrite about $CTX_FMT tokens."
+# Record the warning; drop rows older than 7 days and write back.
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+CUTOFF=$(( NOW_SEC - 7*24*60*60 ))
+TMP="$STATE_PATH.tmp.$$"
+if [ -f "$STATE_PATH" ]; then
+  awk -F'\t' -v c="$CUTOFF" -v k="$KEY" '$1 != k && $2 > c' "$STATE_PATH" > "$TMP" 2>/dev/null || : > "$TMP"
 else
-  HEAD="Context $CTX_FMT tokens
-  Keep going and every turn is re-billed for all $CTX_FMT tokens, even a one-word tweak."
+  : > "$TMP"
 fi
+printf '%s\t%s\n' "$KEY" "$NOW_SEC" >> "$TMP"
+mv "$TMP" "$STATE_PATH" 2>/dev/null || rm -f "$TMP"
+
+CTX_FMT="$(printf '%s' "$CTX" | sed -e :a -e 's/\(.*[0-9]\)\([0-9]\{3\}\)/\1,\2/;ta')"
 
 {
-  printf '\n⚠ %s\n\n' "$HEAD"
+  printf '\n⚠ Context %s tokens / %s min since last activity\n' "$CTX_FMT" "$GAP_MIN"
+  printf '  The prompt cache (1h TTL) has expired, so sending this will rewrite about %s tokens.\n\n' "$CTX_FMT"
   printf '  [1] /compact      Continuing this work (keeps the thread; pays off in 2-3 turns)\n'
   printf '  [2] /clear        Switching topics (free)\n'
   printf '  [3] Continue      Send the same text again (no warning for the next %s min)\n\n' "$SNOOZE_MIN"

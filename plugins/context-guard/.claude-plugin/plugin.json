@@ -1,7 +1,7 @@
 {
   "name": "context-guard",
-  "description": "Stops a send before the API call when the context is bloated or the prompt cache has expired, and offers /compact or /clear instead.",
-  "version": "0.2.0",
+  "description": "Stops a send before the API call when the prompt cache has expired on a long session, and offers /compact or /clear instead.",
+  "version": "0.3.0",
   "author": {
     "name": "tsukimi_neko",
     "url": "https://github.com/cji3bp62000"

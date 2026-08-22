@@ -5,31 +5,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "& \"${CLAUDE_PLUGIN_ROOT}\\scripts\\context-guard.ps1\" -Mode Submit; exit $LASTEXITCODE",
+            "command": "& \"${CLAUDE_PLUGIN_ROOT}\\scripts\\context-guard.ps1\"; exit $LASTEXITCODE",
             "shell": "powershell",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/context-guard.sh\" --mode submit",
-            "shell": "bash",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "& \"${CLAUDE_PLUGIN_ROOT}\\scripts\\context-guard.ps1\" -Mode Stop; exit $LASTEXITCODE",
-            "shell": "powershell",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/context-guard.sh\" --mode stop",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/context-guard.sh\"",
             "shell": "bash",
             "timeout": 15
           }

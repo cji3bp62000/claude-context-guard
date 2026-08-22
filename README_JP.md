@@ -25,10 +25,7 @@ Claude Code のトークン消費は、作業量ではなく **コンテキス�
 
 ## 動作
 
-**送信前（UserPromptSubmit）** — 以下のいずれかで送信をブロックします。ブロック時は API 呼び出しが発生しないため、警告自体のコストはゼロです。
-
-- コンテキストが **8万トークンを超え、かつ前回のやり取りから 55分以上経過**している（＝キャッシュ失効）
-- コンテキストが **25万トークンを超えている**
+**送信前（UserPromptSubmit）** — コンテキストが **8万トークンを超え、かつ前回のやり取りから 55分以上経過**している（＝プロンプトキャッシュが失効している）ときに送信をブロックします。ブロック時は API 呼び出しが発生しないため、警告自体のコストはゼロです。
 
 ```
 ⚠ Context 243,000 tokens / 134 min since last activity
@@ -42,8 +39,6 @@ Claude Code のトークン消費は、作業量ではなく **コンテキス�
 3択目が肝です。**同じ内容をもう一度送ることが「続行」の意思表示**になり、以後30分はスヌーズされます。
 入力内容は ↑ キーで復元できます。復元できなかった場合は先にスラッシュコマンドを打ってください
 （`/compact` や `/clear` などは常に素通りします）。
-
-**ターン終了時（Stop）** — ブロックはせず、20万トークンを超えたときだけ1行通知します。5万トークン刻みで1回だけなので、うるさくなりません。
 
 ### /compact と /clear の使い分け
 
@@ -71,7 +66,7 @@ Claude Code のトークン消費は、作業量ではなく **コンテキス�
 
 ```
 /context-guard:config                          現在のしきい値を表示
-/context-guard:config ブロックを18万にして      変更（settings.json を書き換えます）
+/context-guard:config 下限を6万にして          変更（settings.json を書き換えます）
 ```
 
 中身は環境変数です。手で書いてもかまいません。**変更の反映には Claude Code の再起動が必要です**（環境変数はプロセス起動時に読まれるため）。
@@ -79,7 +74,7 @@ Claude Code のトークン消費は、作業量ではなく **コンテキス�
 ```json
 {
   "env": {
-    "CONTEXT_GUARD_BLOCK_TOKENS": "200000",
+    "CONTEXT_GUARD_STALE_TOKENS": "60000",
     "CONTEXT_GUARD_STALE_MINUTES": "50"
   }
 }
@@ -87,22 +82,17 @@ Claude Code のトークン消費は、作業量ではなく **コンテキス�
 
 | 環境変数 | 既定値 | 意味 |
 |---|---|---|
-| `CONTEXT_GUARD_BLOCK_TOKENS` | 250000 | これを超えたら無条件でブロック |
 | `CONTEXT_GUARD_STALE_TOKENS` | 80000 | 「キャッシュ失効かつ中規模」と判定する下限 |
 | `CONTEXT_GUARD_STALE_MINUTES` | 55 | この分数以上空いたらキャッシュ失効とみなす |
 | `CONTEXT_GUARD_SNOOZE_MINUTES` | 30 | 一度警告したら次はこの時間スルー |
-| `CONTEXT_GUARD_NOTIFY_TOKENS` | 200000 | Stop通知の下限 |
-| `CONTEXT_GUARD_NOTIFY_BUCKET` | 50000 | Stop通知はこの刻みで1回だけ |
 | `CONTEXT_GUARD_TEST` | — | `1` にするとしきい値が1になり必ず発火。動作確認用 |
 
-### `CONTEXT_GUARD_BLOCK_TOKENS` の決め方
+### しきい値の決め方
 
-**2つの発火条件のうち、実測した被害に直接対応しているのはキャッシュ失効側**
-（`STALE_TOKENS` + `STALE_MINUTES`）です。サイズ側は「気づかないうちに膨らんでいる」ことを知らせる保険なので、
-既定値は高め（25万）にしてあります。
-
-こまめに畳みたいなら 15万まで下げてもかまいません。ブロック自体のコストはゼロなので、
-うるさいと感じるかどうかだけが判断材料です。
+**実測した被害に直接対応しているのがキャッシュ失効**（`STALE_TOKENS` + `STALE_MINUTES`）で、
+このプラグインが発火するのはこの条件だけです。`STALE_MINUTES` はキャッシュ TTL（1時間）の
+少し手前に置いてください。もっと小さいセッションでも警告してほしいなら `STALE_TOKENS` を下げます。
+ブロック自体のコストはゼロなので、うるさいと感じるかどうかだけが判断材料です。
 
 状態は `~/.claude/context-guard-state.json`（Windows）/ `context-guard-state.tsv`（mac/Linux）に保存され、7日で自動的に掃除されます。
 
@@ -122,11 +112,11 @@ $env:CONTEXT_GUARD_TEST='1'; claude  # Windows
 | OS | スクリプト | 状態 |
 |---|---|---|
 | Windows | `scripts/context-guard.ps1` | 動作確認済み |
-| macOS / Linux | `scripts/context-guard.sh` | ロジックは Git Bash 上で検証済み（ブロック / スヌーズ / スラッシュ素通り / Stop通知が PowerShell 版と一致）。**実機 macOS / Linux では未検証** |
+| macOS / Linux | `scripts/context-guard.sh` | ロジックは Git Bash 上で検証済み（ブロック / スヌーズ / スラッシュ素通りが PowerShell 版と一致）。**実機 macOS / Linux では未検証** |
 
 macOS では GNU `date` が無いため BSD `date` にフォールバックする経路を通ります。ここだけは実機で踏まれていません。
 
-両方が登録され、それぞれ自分の担当外プラットフォームでは即座に何もせず終了します。
+両方がフックに登録され、それぞれ自分の担当外プラットフォームでは即座に何もせず終了します。
 
 - **mac/Linux で PowerShell (`pwsh`) を入れていない場合**、powershell 側のフックエントリが毎ターン起動に失敗します。動作はブロックされませんが気になる場合は、フォークして `hooks/hooks.json` から powershell エントリを削除してください。
 - **Windows で Git Bash が無い場合**、bash 側のエントリが同様に失敗します。ガード本体は PowerShell 版が担当するので保護は効いています。

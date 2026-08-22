@@ -34,11 +34,9 @@ which is the only place this can be stopped.
 
 ## Behavior
 
-**Before sending (`UserPromptSubmit`)** — the send is blocked when either condition holds.
-Blocking costs nothing, because no API call is made.
-
-- Context is above **80k tokens and 55+ minutes have passed** since the last exchange (cache expired)
-- Context is above **250k tokens**
+**Before sending (`UserPromptSubmit`)** — the send is blocked when the context is above
+**80k tokens and 55+ minutes have passed** since the last exchange, i.e. the prompt cache has
+expired. Blocking costs nothing, because no API call is made.
 
 ```
 ⚠ Context 243,000 tokens / 134 min since last activity
@@ -52,9 +50,6 @@ Blocking costs nothing, because no API call is made.
 The third choice is the important one. **Re-sending the same text is how you say "continue"**,
 and it snoozes the warning for 30 minutes. Press ↑ to recover what you typed; if that fails,
 type a slash command first — slash commands always pass through untouched.
-
-**End of turn (`Stop`)** — never blocks. Prints a single line once the context passes 200k,
-and only once per 50k bucket, so it does not nag.
 
 ### /compact vs /clear
 
@@ -83,7 +78,7 @@ If nothing seems to happen, open `/hooks` once (this reloads the config) or rest
 
 ```
 /context-guard:config                       show the current thresholds
-/context-guard:config block at 180k         change one (rewrites settings.json)
+/context-guard:config stale floor 60k       change one (rewrites settings.json)
 ```
 
 Underneath it is just environment variables, so you can edit them by hand.
@@ -92,7 +87,7 @@ Underneath it is just environment variables, so you can edit them by hand.
 ```json
 {
   "env": {
-    "CONTEXT_GUARD_BLOCK_TOKENS": "200000",
+    "CONTEXT_GUARD_STALE_TOKENS": "60000",
     "CONTEXT_GUARD_STALE_MINUTES": "50"
   }
 }
@@ -100,22 +95,17 @@ Underneath it is just environment variables, so you can edit them by hand.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CONTEXT_GUARD_BLOCK_TOKENS` | 250000 | Block unconditionally above this |
 | `CONTEXT_GUARD_STALE_TOKENS` | 80000 | Floor for "cache expired and non-trivial" |
 | `CONTEXT_GUARD_STALE_MINUTES` | 55 | A gap this long is treated as cache expiry |
 | `CONTEXT_GUARD_SNOOZE_MINUTES` | 30 | Stay quiet this long after a warning |
-| `CONTEXT_GUARD_NOTIFY_TOKENS` | 200000 | Floor for the Stop notice |
-| `CONTEXT_GUARD_NOTIFY_BUCKET` | 50000 | Notify once per bucket of this size |
 | `CONTEXT_GUARD_TEST` | — | Set to `1` to drop every threshold to 1 so the hook always fires. For verification |
 
-### Choosing `CONTEXT_GUARD_BLOCK_TOKENS`
+### Choosing the thresholds
 
-**Of the two conditions, the cache-expiry one** (`STALE_TOKENS` + `STALE_MINUTES`) **is the one
-that maps directly onto the measured damage.** The size condition is a backstop for context
-that grew without you noticing, so its default is deliberately high.
-
-Drop it to 150000 if you would rather fold often. Blocking itself is free, so the only question
-is how much interruption you tolerate.
+**Cache expiry is the condition that maps directly onto the measured damage**, which is why it is
+the only one the hook fires on. `STALE_MINUTES` should stay just under the 1h cache TTL; lower
+`STALE_TOKENS` if you would rather be warned on smaller sessions too. Blocking itself is free,
+so the only question is how much interruption you tolerate.
 
 State lives in `~/.claude/context-guard-state.json` (Windows) or `context-guard-state.tsv`
 (macOS / Linux) and is pruned after 7 days.
@@ -136,12 +126,12 @@ Send anything and it should be blocked. Unset the variable once you have confirm
 | OS | Script | Status |
 |---|---|---|
 | Windows | `scripts/context-guard.ps1` | Verified |
-| macOS / Linux | `scripts/context-guard.sh` | Logic verified under Git Bash (block / snooze / slash pass-through / Stop notice all match the PowerShell version). **Not yet verified on real macOS or Linux** |
+| macOS / Linux | `scripts/context-guard.sh` | Logic verified under Git Bash (block / snooze / slash pass-through all match the PowerShell version). **Not yet verified on real macOS or Linux** |
 
 macOS has no GNU `date`, so it takes the BSD `date` fallback path. That path is the one branch
 that has not run on real hardware.
 
-Both scripts are registered for both events; each exits immediately and silently on the
+Both scripts are registered for the event; each exits immediately and silently on the
 platform it does not own.
 
 - **On macOS / Linux without PowerShell (`pwsh`)**, the powershell hook entry fails to launch every turn. Nothing breaks, but if it bothers you, fork and delete the powershell entries from `hooks/hooks.json`.
