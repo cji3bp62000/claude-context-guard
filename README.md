@@ -99,6 +99,8 @@ Underneath it is just environment variables, so you can edit them by hand.
 | `CONTEXT_GUARD_STALE_MINUTES` | 55 | A gap this long is treated as cache expiry |
 | `CONTEXT_GUARD_SNOOZE_MINUTES` | 30 | Stay quiet this long after a warning |
 | `CONTEXT_GUARD_TEST` | — | Set to `1` to drop every threshold to 1 so the hook always fires. For verification |
+| `CONTEXT_GUARD_STDIN_TIMEOUT_MS` | 3000 | Windows only. If stdin is not readable within this time, let the prompt through |
+| `CONTEXT_GUARD_TRACE` | — | Windows only. A file path; each run appends a timestamped line per step. For diagnosing hangs |
 
 ### Choosing the thresholds
 

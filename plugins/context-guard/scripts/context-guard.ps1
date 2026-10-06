@@ -37,15 +37,33 @@ if ($env:CONTEXT_GUARD_TEST -eq '1') {
 $StateDir  = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
 $StatePath = Join-Path $StateDir 'context-guard-state.json'
 
-# Keep non-ASCII output (the warning glyph) readable in the terminal.
-try {
-    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-    [Console]::InputEncoding  = [Text.UTF8Encoding]::new($false)
-} catch { }
+# Give up on stdin after this long and let the prompt through.
+$StdinTimeoutMs = Get-Threshold 'CONTEXT_GUARD_STDIN_TIMEOUT_MS' 3000
+
+# For diagnosis: CONTEXT_GUARD_TRACE=<file> appends a timestamped line per step.
+function Write-Trace {
+    param([string]$Step)
+    if (-not $env:CONTEXT_GUARD_TRACE) { return }
+    try { Add-Content -LiteralPath $env:CONTEXT_GUARD_TRACE -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') $PID $Step" } catch { }
+}
+Write-Trace 'start'
+
+# The console is shared with the Claude Code UI, so its encodings are left alone.
+# Instead, stdin and stderr are wrapped in UTF-8 streams of our own. Setting
+# [Console]::OutputEncoding / InputEncoding here coincided with the hook hanging
+# until its 15 s timeout on Windows.
+$Utf8 = [Text.UTF8Encoding]::new($false)
 
 # Never break the session. On anything unexpected, fall through with exit 0.
 try {
-    $raw = [Console]::In.ReadToEnd()
+    $reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8)
+    $readTask = $reader.ReadToEndAsync()
+    if (-not $readTask.Wait($StdinTimeoutMs)) {
+        Write-Trace 'stdin timed out'
+        exit 0
+    }
+    $raw = $readTask.Result
+    Write-Trace 'stdin read'
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
     $payload = $raw | ConvertFrom-Json
 
@@ -86,6 +104,7 @@ try {
         }
         break
     }
+    Write-Trace 'transcript read'
     if ($ctx -le 0) { exit 0 }
 
     $gapMin = if ($null -ne $lastSec) { [int](($nowSec - $lastSec) / 60) } else { 0 }
@@ -137,7 +156,11 @@ try {
         "  [3] Continue      Send the same text again (no warning for the next $SnoozeMinutes min)"
         ''
     )
-    [Console]::Error.WriteLine(($lines -join "`n"))
+    # Written as UTF-8 bytes so the warning glyph survives without touching the console encoding.
+    $stderr = [IO.StreamWriter]::new([Console]::OpenStandardError(), $Utf8)
+    $stderr.Write(($lines -join "`n") + "`n")
+    $stderr.Flush()
+    Write-Trace 'blocked'
     exit 2
 }
 catch {

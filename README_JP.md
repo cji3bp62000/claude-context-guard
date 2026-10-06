@@ -86,6 +86,8 @@ Claude Code のトークン消費は、作業量ではなく **コンテキス�
 | `CONTEXT_GUARD_STALE_MINUTES` | 55 | この分数以上空いたらキャッシュ失効とみなす |
 | `CONTEXT_GUARD_SNOOZE_MINUTES` | 30 | 一度警告したら次はこの時間スルー |
 | `CONTEXT_GUARD_TEST` | — | `1` にするとしきい値が1になり必ず発火。動作確認用 |
+| `CONTEXT_GUARD_STDIN_TIMEOUT_MS` | 3000 | Windows のみ。この時間内に標準入力が読めなければ、何もせず通す |
+| `CONTEXT_GUARD_TRACE` | — | Windows のみ。ファイルのパスを入れると、実行のたびに段階ごとの時刻を追記する。止まる原因の調査用 |
 
 ### しきい値の決め方
 
